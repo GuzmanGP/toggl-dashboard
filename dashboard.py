@@ -10,9 +10,10 @@ from dateutil.relativedelta import relativedelta
 import dash_bootstrap_components as dbc
 from dash import dash_table
 from dash.dash_table.Format import Group
+import json
 
 # Import your data processing script
-import process_data
+import data_processors
 
 # Import the Toggl API functions
 import toggl_api
@@ -32,6 +33,21 @@ app.layout = dbc.Container([
     dbc.Row([
         dbc.Col(html.H1("Toggl Data Dashboard"), width=12)
     ], justify='center', align='center'),
+    dash_table.DataTable(
+    id='custom-table',
+    columns=[
+        {'name': 'Contador', 'id': 'slot_entrie_counter'},
+        {'name': 'Proyecto', 'id': 'project_name'},
+        {'name': 'Tipo de actividad', 'id': 'slot_entrie_tags'},
+        {'name': 'Descripción', 'id': 'slot_entrie_description'},
+        {'name': 'Hora de inicio', 'id': 'slot_entrie_start'},
+        {'name': 'Hora de fin', 'id': 'slot_entrie_stop'},
+        {'name': 'Tiempo excedido', 'id': 'slot_entrie_excess_time'},
+        {'name': 'Diferencia de tiempo con entrada anterior', 'id': 'slot_entrie_time_diff'},
+    ],
+    sort_action='native',
+    sort_mode='multi'
+    ),
     dbc.Row([
         dbc.Col(dcc.Dropdown(
             id='time-range',
@@ -136,7 +152,7 @@ def update_output(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    df = process_data.process_data(projects, all_time_entries, start_date, end_date)
+    df = data_processors.process_data(projects, all_time_entries, start_date, end_date)
 
     # Generate and return the treemap figure
     fig = px.treemap(df, path=['project_name', 'slot_entrie_tags'], title='Tipos de tareas')
@@ -155,6 +171,46 @@ def update_output(start_date, end_date):
     return fig
 
 @app.callback(
+    Output('custom-table', 'data'),
+    [Input('my-date-picker-range', 'start_date')])
+def update_custom_table(start_date):
+    # Convert input date to datetime
+    selected_date = pd.to_datetime(start_date)
+    next_day = selected_date + pd.Timedelta(days=1)
+
+    # Process the data and get the DataFrame
+    custom_data = data_processors.preprocess_slot_entrie(all_time_entries)
+
+    # Ensure the 'at' time is in the correct timezone and format
+    custom_data['slot_entrie_at'] = pd.to_datetime(custom_data['slot_entrie_at']).dt.tz_convert('UTC')
+
+    float_columns = ['slot_entrie_duration', 'slot_entrie_excess_time']
+    timedelta_columns = ['slot_entrie_time_diff']
+
+    for column in float_columns:
+        custom_data[column] = custom_data[column].fillna(0)
+
+    for column in timedelta_columns:
+        custom_data[column] = custom_data[column].fillna(pd.Timedelta(seconds=0))
+
+    # Filter the data to include only the entries within the selected date
+    custom_data = custom_data[(custom_data['slot_entrie_at'].dt.date >= selected_date) & (custom_data['slot_entrie_at'].dt.date < next_day)]
+
+    custom_data['slot_entrie_start'] = custom_data['slot_entrie_start'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    custom_data['slot_entrie_stop'] = custom_data['slot_entrie_stop'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    custom_data['slot_entrie_at'] = custom_data['slot_entrie_at'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    # Si el campo slot_entrie_time_diff también es un Timestamp, también necesitas convertirlo
+    custom_data['slot_entrie_time_diff'] = custom_data['slot_entrie_time_diff'].apply(lambda x: str(x) if pd.notnull(x) else '')
+
+    return custom_data.to_dict('records')
+
+
+
+
+
+
+@app.callback(
     Output('treemap-chart-description', 'figure'),
     [Input('my-date-picker-range', 'start_date'),
      Input('my-date-picker-range', 'end_date')])
@@ -164,7 +220,7 @@ def update_output_description(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    df = process_data.process_data(projects, all_time_entries, start_date, end_date)
+    df = data_processors.process_data(projects, all_time_entries, start_date, end_date)
 
     # Generate and return the treemap figure
     fig = px.treemap(df, path=['project_name', 'slot_entrie_description'], title='Descripciones de las tareas')
@@ -182,6 +238,8 @@ def update_output_description(start_date, end_date):
     
     return fig
 
+
+
 @app.callback(
     Output('pie-chart-projects', 'figure'),
     [Input('my-date-picker-range', 'start_date'),
@@ -192,7 +250,7 @@ def update_pie_chart(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    df = process_data.process_data(projects, all_time_entries, start_date, end_date)
+    df = data_processors.process_data(projects, all_time_entries, start_date, end_date)
 
     # Generate and return the pie chart figure
     fig = px.pie(df, values='slot_entrie_duration', names='project_name', title='Proyectos')
@@ -208,7 +266,7 @@ def update_task_table(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    task_data = process_data.process_descriptions_table_data(projects, all_time_entries, start_date, end_date)
+    task_data = data_processors.process_descriptions_table_data(projects, all_time_entries, start_date, end_date)
 
     return task_data.to_dict('records')
 
@@ -222,8 +280,8 @@ def update_task_table(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    tags_data = process_data.process_tags_table_data(projects, all_time_entries, start_date, end_date)
-   
+    tags_data = data_processors.process_tags_table_data(projects, all_time_entries, start_date, end_date)
+
     return tags_data.to_dict('records')
 
 
@@ -237,7 +295,7 @@ def update_duration_cumulative_chart(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    df = process_data.process_data(projects, all_time_entries, start_date, end_date)
+    df = data_processors.process_data(projects, all_time_entries, start_date, end_date)
 
     # Convert 'slot_entrie_start' and 'slot_entrie_duration' to datetime and timedelta respectively
     df['slot_entrie_start'] = pd.to_datetime(df['slot_entrie_start'])
@@ -252,7 +310,7 @@ def update_duration_cumulative_chart(start_date, end_date):
 
     # Convert the duration from timedelta to seconds
     df_grouped['slot_entrie_duration'] = df_grouped['slot_entrie_duration'].dt.total_seconds() / 3600
-    print(df_grouped)
+    
     # Calculate the average duration per day
     avg_daily_duration = df_grouped.groupby('date')['slot_entrie_duration'].sum().mean()
 
@@ -296,7 +354,7 @@ def update_duration_cumulative_chart(start_date, end_date):
     end_date = pd.to_datetime(end_date).tz_localize('UTC')
 
     # Process the data and get the DataFrame
-    df = process_data.process_data(projects, all_time_entries, start_date, end_date)
+    df = data_processors.process_data(projects, all_time_entries, start_date, end_date)
     
     # Convert 'slot_entrie_start' and 'slot_entrie_duration' to datetime and timedelta respectively
     df['slot_entrie_start'] = pd.to_datetime(df['slot_entrie_start'])
@@ -311,13 +369,14 @@ def update_duration_cumulative_chart(start_date, end_date):
 
     # Convert the duration from timedelta to seconds
     df_grouped['slot_entrie_duration'] = df_grouped['slot_entrie_duration'].dt.total_seconds() / 3600
-    print(df_grouped)
+    
     # Calculate the average duration per day
     avg_daily_duration = df_grouped.groupby('date')['slot_entrie_duration'].sum().mean()
 
     # Generate the bar chart figure
     fig = px.bar(df_grouped, x='date', y='slot_entrie_duration', color='slot_entrie_tags',
-                 title='Duración Acumulada de Tipo de Tareas por Día')
+                 title='Duración Acumulada de Tipo de Tareas por Día', template=None)
+    
 
     # Move the legend to the bottom
     fig.update_layout(legend=dict(
